@@ -1,7 +1,6 @@
-# Dual-pol CycleGAN: SAR -> optical (Earth proxy for lunar PSRs)
+# Synthesizing Visible Optical Imagery from SAR Data in Lunar Permanently Shadowed Regions (PSRs) Using Dual-Polarization CycleGAN
 
-Unpaired image-to-image translation. Domain A = Sentinel-1 (VV, VH), domain B = Sentinel-2 optical.
-Trained on the Bengaluru proxy; designed so the same code can later take lunar SAR/optical tiles.
+Unpaired image-to-image translation translating SAR (e.g., LRO Mini-RF / Chandrayaan-2 DFSAR) to optical imagery (LROC NAC / KPLO ShadowCam) for lunar exploration, using Sentinel-1/2 Earth proxy validation.
 
 ## Files
 | file | purpose |
