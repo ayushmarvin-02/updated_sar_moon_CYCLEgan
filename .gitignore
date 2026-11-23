@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch / checkpoints / trained models
+runs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Datasets and large satellite/radar rasters
+data/
+raw_*/
+test_*
+*.npy
+*.npz
+*.tif
+*.tiff
+*.geotiff
+*.h5
+*.hdf5
+*.nc
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE / Editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
