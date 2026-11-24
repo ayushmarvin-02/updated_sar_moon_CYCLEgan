@@ -44,8 +44,11 @@ Evaluated on the held-out test split (11 patches):
 ### Visual Columns Explanation:
 $$\underbrace{\text{SAR Input (CPR)}}_{\text{Column 1}} \quad\longrightarrow\quad \underbrace{\text{Synthesized Optical } (G_{AB})}_{\text{Column 2}} \quad\longrightarrow\quad \underbrace{\text{Reference Optical}}_{\text{Column 3}} \quad\longrightarrow\quad \underbrace{\text{Cycle-Reconstructed SAR } (G_{BA})}_{\text{Column 4}}$$
 
-* **Final 50-Epoch Evaluation Grid**: `runs/epochs_50/eval_test/samples.png`
-* **Final Training Sample**: `runs/epochs_50/samples/epoch_050.png`
+#### Final 50-Epoch Evaluation Grid (Held-Out Test Split):
+![Evaluation Samples (Epoch 50)](assets/eval_samples.png)
+
+#### Final Training Progress Sample (Epoch 50):
+![Epoch 50 Sample](assets/epoch_050.png)
 
 ---
 

@@ -42,6 +42,8 @@ $$\underbrace{\text{SAR Input (CPR)}}_{\text{Column 1 (Radar)}} \quad\longrighta
 * **Column 3 (Target Optical)**: Target optical luminance.
 * **Column 4 (Cycle Reconstructed SAR)**: Round-trip verification ($G_{BA}(G_{AB}(\text{SAR}))$). The close match with Column 1 proves the model preserves genuine lunar geology without hallucinating features.
 
+![Visual Translation Grid](assets/eval_samples.png)
+
 ---
 
 ## 📁 Repository Structure
