@@ -17,8 +17,13 @@ CHANNEL_INDEX = {
     # Lunar SAR aliases (Mini-RF / DFSAR)
     "s1": 0, "cpr": 1, "s2": 1,
     "sc": 0, "oc": 1,
+    # Chandrayaan-2 DFSAR 6-channel South Pole mosaics
+    "east_cpr": 0, "east_srd": 1, "east_trt": 2,
+    "west_cpr": 3, "west_srd": 4, "west_trt": 5,
+    "cpr_east": 0, "srd_east": 1, "trt_east": 2,
+    "cpr_west": 3, "srd_west": 4, "trt_west": 5,
     # Generic index aliases
-    "ch0": 0, "ch1": 1, "ch2": 2,
+    "ch0": 0, "ch1": 1, "ch2": 2, "ch3": 3, "ch4": 4, "ch5": 5,
 }
 
 

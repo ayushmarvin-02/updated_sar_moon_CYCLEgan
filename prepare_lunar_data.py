@@ -1,13 +1,13 @@
-"""Prepare lunar SAR and optical rasters into normalized tiles for CycleGAN.
+"""Prepare lunar SAR and optical datasets into normalized tiles for CycleGAN.
 
-Designed for Lunar instruments:
-  - SAR: Chandrayaan-2 DFSAR (Hybrid-pol / Stokes) or LRO Mini-RF (S1, CPR / SC, OC)
-  - Optical: LRO LROC NAC (grayscale radiance/reflectance) or ShadowCam
-
-Inputs:
-  SAR: either a multi-band raster via --sar, OR separate single-band rasters
-       via --sar-ch1 and --sar-ch2 (e.g. S1 and CPR).
-  Optical: single-band (or multi-band) grayscale raster via --opt.
+Supports two input workflows:
+  1. Full-Scene Rasters:
+     Cuts large SAR GeoTIFF/npy rasters and LROC/ShadowCam optical rasters into tiles
+     with optional PSR mask filtering (via --sar or --sar-ch1/--sar-ch2 and --opt).
+  2. Pre-extracted Patch Stacks:
+     Unpacks pre-cut 4D stacks (like dataset_moon with train/val/test patches.npy),
+     normalizes all radar channels into [-1, 1], and pairs with optical or surrogate
+     targets (via --patches-dir).
 
 Outputs:
   <out>/{train,val,test}/{sar,opt}/NNNNN.npy and <out>/meta.json
@@ -18,7 +18,12 @@ import os
 import sys
 
 import numpy as np
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import gaussian_filter, uniform_filter
+
+DEFAULT_DFSAR_CHANNELS = [
+    "east_cpr", "east_srd", "east_trt",
+    "west_cpr", "west_srd", "west_trt"
+]
 
 
 def read_raster(path):
@@ -73,36 +78,96 @@ def normalize_to_minus1_1(arr, valid_mask, p_low=1.0, p_high=99.0, manual_range=
     return norm.astype(np.float32), (lo, hi)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Prepare lunar SAR and optical tiles.")
-    # SAR options
-    ap.add_argument("--sar", help="Single multi-band SAR file (GeoTIFF or .npy).")
-    ap.add_argument("--sar-ch1", help="SAR primary channel (e.g. S1 or Same-Sense circular).")
-    ap.add_argument("--sar-ch2", help="SAR secondary channel (e.g. CPR or Opposite-Sense circular).")
-    ap.add_argument("--sar-names", default="s1,cpr", help="Comma-separated channel names (e.g. s1,cpr or sc,oc).")
-    ap.add_argument("--lee-window", type=int, default=3, help="Lee speckle filter window size (0 to disable).")
+def make_surrogate_optical(sar_patch):
+    """Generate a surrogate lunar grayscale optical patch (1, H, W) in [-1, 1]
+    from SAR surface roughness & CPR features when optical matching is pending."""
+    cpr = sar_patch[0]
+    srd = sar_patch[1] if sar_patch.shape[0] > 1 else sar_patch[0]
+    albedo = 0.12 + 0.03 * gaussian_filter(srd, 15)
+    rim_boulders = np.clip(cpr * 0.2, 0.0, 0.2)
+    opt = np.clip(albedo + rim_boulders, 0.0, 0.35)
+    norm = np.clip(opt / 0.3, 0.0, 1.0) * 2.0 - 1.0
+    return norm[None].astype(np.float32)
 
-    # Optical options
-    ap.add_argument("--opt", required=True, help="LROC NAC / ShadowCam grayscale optical raster.")
 
-    # PSR (Permanently Shadowed Region) filtering options
-    ap.add_argument("--psr-mask", help="Path to PSR mask (1=PSR, 0=sunlit) or LOLA illumination GeoTIFF/.npy.")
-    ap.add_argument("--min-psr-fraction", type=float, default=0.5,
-                    help="Minimum fraction of tile area that must be inside PSR (default: 0.5 = 50%%).")
-    ap.add_argument("--psr-is-illumination", action="store_true",
-                    help="Set if mask is a LOLA illumination percentage (0-100%%); pixels with illumination <= --psr-thresh are treated as PSR.")
-    ap.add_argument("--psr-thresh", type=float, default=0.0,
-                    help="Illumination threshold for PSR when --psr-is-illumination is set (default: 0.0%%).")
+def process_patches_stack(a):
+    """Workflow 2: Unpack and normalize 4D pre-extracted patches (e.g. dataset_moon)."""
+    train_path = os.path.join(a.patches_dir, "train", "patches.npy")
+    val_path = os.path.join(a.patches_dir, "val", "patches.npy")
+    test_path = os.path.join(a.patches_dir, "test", "patches.npy")
 
-    # General & tiling options
-    ap.add_argument("--out", required=True, help="Output directory.")
-    ap.add_argument("--tile", type=int, default=256, help="Tile size in pixels.")
-    ap.add_argument("--stride", type=int, default=256, help="Tile stride in pixels.")
-    ap.add_argument("--min-valid", type=float, default=0.90, help="Min fraction of valid pixels per tile.")
-    ap.add_argument("--split", type=float, nargs=3, default=[0.70, 0.15, 0.15],
-                    metavar=("TRAIN", "VAL", "TEST"), help="Train/val/test fractions.")
-    a = ap.parse_args()
+    for p in (train_path, val_path, test_path):
+        if not os.path.exists(p):
+            sys.exit(f"Missing patches file: {p}")
 
+    print(f"Loading patch stacks from '{a.patches_dir}'...")
+    train_raw = np.load(train_path)
+    val_raw = np.load(val_path)
+    test_raw = np.load(test_path)
+
+    n_ch = train_raw.shape[1]
+    if a.sar_names:
+        ch_names = [n.strip().lower() for n in a.sar_names.split(",") if n.strip()]
+    elif n_ch == 6:
+        ch_names = DEFAULT_DFSAR_CHANNELS
+    else:
+        ch_names = [f"ch{i}" for i in range(n_ch)]
+
+    print(f"Loaded: train={train_raw.shape}, val={val_raw.shape}, test={test_raw.shape} ({n_ch} channels)")
+
+    # Compute normalization ranges from training split
+    ranges = {}
+    for c in range(n_ch):
+        name = ch_names[c] if c < len(ch_names) else f"ch{c}"
+        data = train_raw[:, c, :, :]
+        lo = float(np.percentile(data, 1.0))
+        hi = float(np.percentile(data, 99.0))
+        if hi <= lo:
+            hi = lo + 1e-4
+        ranges[name] = (lo, hi)
+        print(f"  {name:10s}: [{lo:.4f}, {hi:.4f}] -> mapped to [-1, 1]")
+
+    # Normalize splits
+    splits = {"train": train_raw, "val": val_raw, "test": test_raw}
+    counts = {"train": 0, "val": 0, "test": 0}
+
+    for sp, raw_arr in splits.items():
+        sar_dir = os.path.join(a.out, sp, "sar")
+        opt_dir = os.path.join(a.out, sp, "opt")
+        os.makedirs(sar_dir, exist_ok=True)
+        if a.surrogate_opt:
+            os.makedirs(opt_dir, exist_ok=True)
+
+        norm_arr = np.empty_like(raw_arr, dtype=np.float32)
+        for c in range(n_ch):
+            name = ch_names[c] if c < len(ch_names) else f"ch{c}"
+            lo, hi = ranges[name]
+            norm_arr[:, c, :, :] = np.clip((raw_arr[:, c, :, :] - lo) / (hi - lo), 0.0, 1.0) * 2.0 - 1.0
+
+        for i in range(norm_arr.shape[0]):
+            np.save(os.path.join(sar_dir, f"{i:05d}.npy"), norm_arr[i])
+            if a.surrogate_opt:
+                opt_tile = make_surrogate_optical(norm_arr[i])
+                np.save(os.path.join(opt_dir, f"{i:05d}.npy"), opt_tile)
+            counts[sp] += 1
+
+    meta = {
+        "source": "pre-extracted patch stacks",
+        "patches_dir": a.patches_dir,
+        "sar_channels": ch_names[:n_ch],
+        "sar_ranges": ranges,
+        "counts": counts,
+        "has_optical": a.surrogate_opt
+    }
+    with open(os.path.join(a.out, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+
+    print(f"\nPrepared {sum(counts.values())} tiles in '{a.out}':")
+    print(json.dumps(meta, indent=2))
+
+
+def process_full_rasters(a):
+    """Workflow 1: Slice large full-scene GeoTIFF/npy rasters into tiles with PSR filtering."""
     # Load SAR
     if a.sar:
         sar_arr = read_raster(a.sar)
@@ -116,14 +181,16 @@ def main():
         else:
             sar_arr = ch1[:1]
     else:
-        sys.exit("Must supply either --sar (multi-band raster) or --sar-ch1 (and optional --sar-ch2).")
+        sys.exit("Must supply either --patches-dir, OR --sar, OR --sar-ch1 (and optional --sar-ch2).")
 
     # Load Optical
+    if not a.opt:
+        sys.exit("Full-scene raster mode requires --opt (path to optical raster).")
+
     opt_arr = read_raster(a.opt)
     if opt_arr.ndim == 2:
         opt_arr = opt_arr[None]
     elif opt_arr.shape[0] > 1:
-        # If multi-band (RGB), convert to lunar luminance
         opt_arr = (0.2126 * opt_arr[0] + 0.7152 * opt_arr[1] + 0.0722 * opt_arr[2])[None]
 
     # Verify spatial alignment
@@ -149,7 +216,7 @@ def main():
             psr_mask_arr = (p_raw <= a.psr_thresh) & np.isfinite(p_raw)
         else:
             psr_mask_arr = (p_raw > 0.5) & np.isfinite(p_raw)
-        print(f"Loaded PSR mask: {psr_mask_arr.sum()} pixels ({psr_mask_arr.mean() * 100:.2f}%% of scene) in PSR.")
+        print(f"Loaded PSR mask: {psr_mask_arr.sum()} pixels ({psr_mask_arr.mean() * 100:.2f}% of scene) in PSR.")
 
     # Validity masks
     sar_valid = np.all(np.isfinite(sar_arr), axis=0)
@@ -162,8 +229,6 @@ def main():
     for idx in range(sar_arr.shape[0]):
         ch = sar_arr[idx]
         ch_name = channel_names[idx] if idx < len(channel_names) else f"ch{idx}"
-        
-        # Lee filter for speckle reduction if requested
         if a.lee_window > 1:
             ch_finite = np.where(sar_valid, ch, np.median(ch[sar_valid]) if sar_valid.any() else 0.0)
             ch = lee_filter(ch_finite, a.lee_window)
@@ -178,7 +243,7 @@ def main():
     opt_norm, opt_range = normalize_to_minus1_1(opt_arr[0], opt_valid, p_low=1.0, p_high=99.0)
     opt_tiles_stack = opt_norm[None]
 
-    # Collect candidate tiles matching validity and PSR mask criteria
+    # Collect candidate tiles
     skipped_low_valid = 0
     skipped_non_psr = 0
     candidate_tiles = []
@@ -198,13 +263,11 @@ def main():
     if not candidate_tiles:
         sys.exit(
             f"No tiles found matching criteria!\n"
-            f"Skipped {skipped_non_psr} tiles because PSR coverage was below {a.min_psr_fraction * 100:.1f}%%.\n"
-            f"Try lowering --min-psr-fraction or checking that your PSR mask aligns with the SAR/optical data."
+            f"Skipped {skipped_non_psr} non-PSR tiles and {skipped_low_valid} nodata tiles."
         )
 
     print(f"Found {len(candidate_tiles)} valid tiles (filtered out {skipped_non_psr} non-PSR tiles, {skipped_low_valid} nodata tiles).")
 
-    # Spatial partitioning by coordinate ordering so tiles in splits are distinct spatial blocks
     candidate_tiles.sort(key=lambda pos: (pos[0], pos[1]))
     n_total = len(candidate_tiles)
     f0, f1 = a.split[0] / sum(a.split), a.split[1] / sum(a.split)
@@ -233,6 +296,7 @@ def main():
             counts[sp] += 1
 
     meta = {
+        "source": "full-scene rasters",
         "tile": t,
         "stride": a.stride,
         "optical_mode": "gray",
@@ -251,6 +315,44 @@ def main():
 
     print("Lunar dataset preparation complete:")
     print(json.dumps(meta, indent=2))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Prepare lunar SAR and optical tiles.")
+    # Mode 1: Pre-extracted patch stacks (e.g. dataset_moon)
+    ap.add_argument("--patches-dir", help="Path to pre-extracted patches folder (like dataset_moon with train/val/test patches.npy).")
+    ap.add_argument("--surrogate-opt", action="store_true", help="Generate surrogate optical targets for testing when ShadowCam matching is pending.")
+
+    # Mode 2: Full-scene rasters
+    ap.add_argument("--sar", help="Single multi-band SAR file (GeoTIFF or .npy).")
+    ap.add_argument("--sar-ch1", help="SAR primary channel (e.g. S1 or Same-Sense circular).")
+    ap.add_argument("--sar-ch2", help="SAR secondary channel (e.g. CPR or Opposite-Sense circular).")
+    ap.add_argument("--sar-names", help="Comma-separated channel names (e.g. s1,cpr or east_cpr,east_srd,...).")
+    ap.add_argument("--lee-window", type=int, default=3, help="Lee speckle filter window size (0 to disable).")
+    ap.add_argument("--opt", help="LROC NAC / ShadowCam grayscale optical raster.")
+
+    # PSR filtering options
+    ap.add_argument("--psr-mask", help="Path to PSR mask (1=PSR, 0=sunlit) or LOLA illumination GeoTIFF/.npy.")
+    ap.add_argument("--min-psr-fraction", type=float, default=0.5,
+                    help="Minimum fraction of tile area that must be inside PSR (default: 0.5 = 50%%).")
+    ap.add_argument("--psr-is-illumination", action="store_true",
+                    help="Set if mask is a LOLA illumination percentage (0-100%%); pixels with illumination <= --psr-thresh are treated as PSR.")
+    ap.add_argument("--psr-thresh", type=float, default=0.0,
+                    help="Illumination threshold for PSR when --psr-is-illumination is set (default: 0.0%%).")
+
+    # Tiling & general options
+    ap.add_argument("--out", required=True, help="Output directory.")
+    ap.add_argument("--tile", type=int, default=256, help="Tile size in pixels.")
+    ap.add_argument("--stride", type=int, default=256, help="Tile stride in pixels.")
+    ap.add_argument("--min-valid", type=float, default=0.90, help="Min fraction of valid pixels per tile.")
+    ap.add_argument("--split", type=float, nargs=3, default=[0.70, 0.15, 0.15],
+                    metavar=("TRAIN", "VAL", "TEST"), help="Train/val/test fractions.")
+    a = ap.parse_args()
+
+    if a.patches_dir:
+        process_patches_stack(a)
+    else:
+        process_full_rasters(a)
 
 
 if __name__ == "__main__":

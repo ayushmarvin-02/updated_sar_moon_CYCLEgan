@@ -12,6 +12,7 @@ checkpoints/
 
 # Datasets and large satellite/radar rasters
 data/
+dataset_moon/
 raw_*/
 test_*
 *.npy
