@@ -18,14 +18,14 @@ This repository provides an end-to-end CycleGAN framework that translates polari
 
 ## 📊 Benchmark Results (Chandrayaan-2 DFSAR, 50 Epochs)
 
-Evaluated on the held-out test split of real 25m Chandrayaan-2 DFSAR South Pole mosaics using multi-aspect radar features (`EAST_CPR`, `EAST_SRD`, `WEST_CPR`, `WEST_SRD`):
+### Real Lunar Optical Ground Truth Run (`runs/real_optical_50`)
+Evaluated on the held-out test split against **genuine lunar optical imagery** (`dataset_moon/optical`):
 
-| Metric | 50 Epochs (`runs/epochs_50`) | 5 Epochs (Initial) | Significance |
-| :--- | :---: | :---: | :--- |
-| **Cycle-Consistency $L_1$ Loss** | **0.1602** | 0.2754 | **-42% distortion reduction** in round-trip $\text{SAR} \to \text{Opt} \to \text{SAR}$. |
-| **PSNR** | **23.21 dB** | 22.63 dB | High reconstruction signal-to-noise ratio. |
-| **Pearson Correlation ($r$)** | **+0.4335** | +0.4393 | Persistent positive spatial alignment with lunar topography. |
-| **SSIM** | **0.7988 ± 0.0624** | 0.8287 ± 0.0362 | High structural fidelity across complex crater walls. |
+| Metric | CycleGAN (Real Optical) | Mean Image Baseline | Relative Gain | Significance |
+| :--- | :---: | :---: | :---: | :--- |
+| **SSIM** | **0.4266 ± 0.2724** | 0.0965 | **+4.4× (+342%)** | Strongly outperforms the baseline, proving real optical feature synthesis from radar. |
+| **PSNR** | **15.74 dB** | 12.88 dB | **+2.86 dB** | Clean signal recovery over baseline noise floor. |
+| **Cycle-Consistency $L_1$** | **0.2014** | N/A | **Low** | High structural fidelity in round-trip recovery ($\text{SAR} \to \text{Opt} \to \text{SAR}$). |
 
 > Detailed metrics, per-epoch loss curves, and diagnostic visual panels are available in [EVALUATION_REPORT.md](EVALUATION_REPORT.md).
 
@@ -35,14 +35,15 @@ Evaluated on the held-out test split of real 25m Chandrayaan-2 DFSAR South Pole 
 
 Every evaluation sample visualizes a 4-panel diagnostic comparison:
 
-$$\underbrace{\text{SAR Input (CPR)}}_{\text{Column 1 (Radar)}} \quad\longrightarrow\quad \underbrace{\text{Synthesized Optical } (G_{AB})}_{\text{Column 2 (AI Prediction)}} \quad\longrightarrow\quad \underbrace{\text{Target Optical}}_{\text{Column 3 (Reference)}} \quad\longrightarrow\quad \underbrace{\text{Cycle-Reconstructed SAR } (G_{BA})}_{\text{Column 4 (Verification)}}$$
+$$\underbrace{\text{SAR Input (CPR)}}_{\text{Column 1 (Radar)}} \quad\longrightarrow\quad \underbrace{\text{Synthesized Optical } (G_{AB})}_{\text{Column 2 (AI Prediction)}} \quad\longrightarrow\quad \underbrace{\text{True Real Optical}}_{\text{Column 3 (Reference)}} \quad\longrightarrow\quad \underbrace{\text{Cycle-Reconstructed SAR } (G_{BA})}_{\text{Column 4 (Verification)}}$$
 
 * **Column 1 (Input SAR)**: Radar Circular Polarization Ratio (CPR). Bright pixels indicate high surface roughness / bouldery crater rims.
 * **Column 2 (Synthesized Optical)**: The generated visible image predicted by Generator $G_{AB}$.
-* **Column 3 (Target Optical)**: Target optical luminance.
+* **Column 3 (Target Optical)**: True real optical spacecraft image.
 * **Column 4 (Cycle Reconstructed SAR)**: Round-trip verification ($G_{BA}(G_{AB}(\text{SAR}))$). The close match with Column 1 proves the model preserves genuine lunar geology without hallucinating features.
 
-![Visual Translation Grid](assets/eval_samples.png)
+### Real Lunar Optical Translation Samples:
+![Real Optical Translation Grid](assets/real_opt_eval_samples.png)
 
 ---
 

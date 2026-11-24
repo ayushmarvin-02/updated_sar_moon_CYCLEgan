@@ -127,16 +127,62 @@ def process_patches_stack(a):
         ranges[name] = (lo, hi)
         print(f"  {name:10s}: [{lo:.4f}, {hi:.4f}] -> mapped to [-1, 1]")
 
+    # Check if real optical patches exist under <patches_dir>/optical
+    opt_base = os.path.join(a.patches_dir, "optical")
+    has_real_optical = False
+    opt_splits = {}
+    opt_range = None
+
+    if os.path.isdir(opt_base):
+        train_opt_p = os.path.join(opt_base, "train", "patches.npy")
+        val_opt_p = os.path.join(opt_base, "val", "patches.npy")
+        test_opt_p = os.path.join(opt_base, "test", "patches.npy")
+        if os.path.exists(train_opt_p) and os.path.exists(val_opt_p) and os.path.exists(test_opt_p):
+            has_real_optical = True
+            print(f"Found real optical dataset in '{opt_base}'!")
+            tr_opt = np.load(train_opt_p).astype(np.float32)
+            va_opt = np.load(val_opt_p).astype(np.float32)
+            te_opt = np.load(test_opt_p).astype(np.float32)
+
+            if tr_opt.ndim == 3:
+                tr_opt = tr_opt[:, None]
+                va_opt = va_opt[:, None]
+                te_opt = te_opt[:, None]
+
+            opt_lo = float(np.percentile(tr_opt, 1.0))
+            opt_hi = float(np.percentile(tr_opt, 99.0))
+            if opt_hi <= opt_lo:
+                opt_hi = opt_lo + 1.0
+            opt_range = (opt_lo, opt_hi)
+            print(f"  Optical normalization range: [{opt_lo:.4f}, {opt_hi:.4f}] -> mapped to [-1, 1]")
+            print(f"  Loaded optical counts: train={len(tr_opt)}, val={len(va_opt)}, test={len(te_opt)}")
+
+            opt_splits["train"] = np.clip((tr_opt - opt_lo) / (opt_hi - opt_lo), 0.0, 1.0) * 2.0 - 1.0
+            opt_splits["val"] = np.clip((va_opt - opt_lo) / (opt_hi - opt_lo), 0.0, 1.0) * 2.0 - 1.0
+            opt_splits["test"] = np.clip((te_opt - opt_lo) / (opt_hi - opt_lo), 0.0, 1.0) * 2.0 - 1.0
+
     # Normalize splits
     splits = {"train": train_raw, "val": val_raw, "test": test_raw}
-    counts = {"train": 0, "val": 0, "test": 0}
+    counts_sar = {"train": 0, "val": 0, "test": 0}
+    counts_opt = {"train": 0, "val": 0, "test": 0}
 
     for sp, raw_arr in splits.items():
         sar_dir = os.path.join(a.out, sp, "sar")
         opt_dir = os.path.join(a.out, sp, "opt")
         os.makedirs(sar_dir, exist_ok=True)
-        if a.surrogate_opt:
+        if has_real_optical or a.surrogate_opt:
             os.makedirs(opt_dir, exist_ok=True)
+
+        # Clear any existing .npy files from older runs in this split
+        for f in os.listdir(sar_dir):
+            if f.endswith(".npy"):
+                try: os.remove(os.path.join(sar_dir, f))
+                except OSError: pass
+        if os.path.exists(opt_dir):
+            for f in os.listdir(opt_dir):
+                if f.endswith(".npy"):
+                    try: os.remove(os.path.join(opt_dir, f))
+                    except OSError: pass
 
         norm_arr = np.empty_like(raw_arr, dtype=np.float32)
         for c in range(n_ch):
@@ -146,23 +192,34 @@ def process_patches_stack(a):
 
         for i in range(norm_arr.shape[0]):
             np.save(os.path.join(sar_dir, f"{i:05d}.npy"), norm_arr[i])
-            if a.surrogate_opt:
+            counts_sar[sp] += 1
+
+        if has_real_optical:
+            sp_opt = opt_splits[sp]
+            for j in range(sp_opt.shape[0]):
+                np.save(os.path.join(opt_dir, f"{j:05d}.npy"), sp_opt[j])
+                counts_opt[sp] += 1
+        elif a.surrogate_opt:
+            for i in range(norm_arr.shape[0]):
                 opt_tile = make_surrogate_optical(norm_arr[i])
                 np.save(os.path.join(opt_dir, f"{i:05d}.npy"), opt_tile)
-            counts[sp] += 1
+                counts_opt[sp] += 1
 
     meta = {
         "source": "pre-extracted patch stacks",
         "patches_dir": a.patches_dir,
         "sar_channels": ch_names[:n_ch],
         "sar_ranges": ranges,
-        "counts": counts,
-        "has_optical": a.surrogate_opt
+        "optical_range": opt_range,
+        "counts_sar": counts_sar,
+        "counts_opt": counts_opt,
+        "has_real_optical": has_real_optical,
+        "has_surrogate_optical": (not has_real_optical) and a.surrogate_opt
     }
     with open(os.path.join(a.out, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
-    print(f"\nPrepared {sum(counts.values())} tiles in '{a.out}':")
+    print(f"\nPrepared {sum(counts_sar.values())} SAR tiles and {sum(counts_opt.values())} Optical tiles in '{a.out}':")
     print(json.dumps(meta, indent=2))
 
 

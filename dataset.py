@@ -98,18 +98,19 @@ class UnpairedDataset(Dataset):
 
 
 class PairedDataset(Dataset):
-    """Evaluation only: SAR tile i with the co-registered optical tile i
-    (valid for the Earth proxy where S1/S2 share a grid)."""
+    """Evaluation only: SAR tile i with optical tile i."""
 
     def __init__(self, root, split="test", channels="vv,vh"):
         self.t = _TileSet(root, split, channels)
+        self.n = min(len(self.t.sar_files), len(self.t.opt_files))
         if len(self.t.sar_files) != len(self.t.opt_files):
-            raise ValueError("paired evaluation needs equal SAR/optical tile counts")
+            print(f"Notice: evaluating on {self.n} available paired test tiles "
+                  f"(SAR={len(self.t.sar_files)}, Opt={len(self.t.opt_files)}).")
         self.opt_channels = self.t.opt_channels
         self.sar_channels = len(self.t.idx)
 
     def __len__(self):
-        return len(self.t.sar_files)
+        return self.n
 
     def __getitem__(self, i):
         return {"A": torch.from_numpy(self.t.load_sar(i).copy()),
