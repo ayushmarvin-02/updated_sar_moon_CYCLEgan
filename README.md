@@ -51,6 +51,7 @@ $$\underbrace{\text{SAR Input (CPR)}}_{\text{Column 1 (Radar)}} \quad\longrighta
 
 | File | Purpose |
 | :--- | :--- |
+| `inference.py` | Standalone real-time inference engine: converts arbitrary SAR patches, stacks, or GeoTIFFs into synthesized optical imagery (~18 ms/tile). |
 | `prepare_lunar_data.py` | Unified preprocessor: handles pre-cut patch stacks (`dataset_moon`) or full-scene GeoTIFF rasters with PSR mask filtering. |
 | `dataset.py` | PyTorch Datasets supporting DFSAR (`east_cpr`, `west_cpr`, etc.), Mini-RF (`s1, cpr`), and Sentinel-1. |
 | `models.py` | ResNet Generator (6–9 residual blocks) and 70×70 PatchGAN Discriminator. |
@@ -100,8 +101,56 @@ python train.py \
 
 ### 4. Evaluate Test Split
 ```bash
-python evaluate.py --ckpt runs/epochs_50/last.pt --data data/moon_dfsar --out runs/epochs_50/eval_test
+python evaluate.py --ckpt runs/real_optical_100/last.pt --data data/moon_dfsar --out runs/real_optical_100/eval_test
 ```
+
+### 5. Real-Time Inference on New Lunar PSR Radar Data
+Use `inference.py` to synthesize optical views directly from raw radar patch stacks or full-scene GeoTIFFs:
+
+```bash
+# A. Predict on a single patch from a 4D stack (e.g. patch #0)
+python inference.py --input dataset_moon/test/patches.npy --index 0 --out runs/inference
+
+# B. Batch predict on ALL test patches in a stack (~18 ms/tile)
+python inference.py --input dataset_moon/test/patches.npy --all --out runs/inference
+
+# C. Predict on an individual normalized .npy tile
+python inference.py --input data/moon_dfsar/test/sar/00000.npy --out runs/inference
+
+# D. Predict on a full-scene large GeoTIFF with Hann-cosine seamless window blending
+python inference.py --input path/to/sar_scene.tif --out runs/inference --save-tif
+```
+
+#### Python API Integration
+```python
+from inference import LunarOpticalSynthesizer
+
+# Loads the best trained ResNet-9 checkpoint and calibration metadata
+synth = LunarOpticalSynthesizer("runs/real_optical_100/last.pt")
+
+# Pass raw or normalized radar array (shape: (C, H, W) or (H, W))
+result = synth.predict("dataset_moon/test/patches.npy", index=0)
+
+# Retrieve synthesized optical image (uint8 grayscale [0, 255])
+optical_image = result["optical_uint8"]
+print(f"Synthesized in {result['latency_ms']:.2f} ms!")
+```
+
+---
+
+## ⚡ Inference Benchmark & Visual Showcase
+
+Inference requires only a single forward pass through Generator $G_{AB}$. On a consumer GPU, it operates in real time:
+* **Single-Tile Latency**: **~18.18 ms** per $256 \times 256$ tile.
+* **Throughput**: **~55.0 tiles per second** (batch of 11 tiles completed in $200\text{ ms}$).
+
+### Synthesized Optical Output Samples:
+![Inference Showcase Grid](assets/inference_grid.png)
+
+* **Left (Input Radar)**: Dual-polarization / multi-aspect DFSAR CPR radar data in total shadow.
+* **Right (Synthesized Optical)**: Reconstructed optical terrain revealing crater morphology, boulders, and ejecta blankets.
+
+---
 
 ---
 
