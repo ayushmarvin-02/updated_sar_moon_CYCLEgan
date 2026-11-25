@@ -12,7 +12,16 @@ Evaluation & Benchmarking:
 import argparse
 import json
 import os
+import sys
 import time
+
+# Ensure project root is in sys.path
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+_DIR = os.path.abspath(os.path.dirname(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -22,7 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from dataset import parse_channels
-from diffusion_model import DDPMScheduler, DiffusionUNet
+from diffusion.diffusion_model import DDPMScheduler, DiffusionUNet
 from models import ResnetGenerator
 from utils import set_seed
 

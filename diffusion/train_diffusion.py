@@ -11,7 +11,16 @@ import argparse
 import glob
 import os
 import random
+import sys
 import time
+
+# Ensure project root is in sys.path
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+_DIR = os.path.abspath(os.path.dirname(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
 
 import numpy as np
 import torch
@@ -19,7 +28,7 @@ import torch.nn as nn
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
-from diffusion_model import DDPMScheduler, DiffusionUNet
+from diffusion.diffusion_model import DDPMScheduler, DiffusionUNet
 from models import ResnetGenerator
 from utils import set_seed
 

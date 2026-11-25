@@ -49,7 +49,7 @@ $$\underbrace{\text{SAR Input (CPR)}}_{\text{Column 1 (Radar)}} \quad\longrighta
 
 ## 📁 Repository Structure
 
-| File | Purpose |
+| File / Directory | Purpose |
 | :--- | :--- |
 | `inference.py` | Standalone real-time inference engine: converts arbitrary SAR patches, stacks, or GeoTIFFs into synthesized optical imagery (~18 ms/tile). |
 | `prepare_lunar_data.py` | Unified preprocessor: handles pre-cut patch stacks (`dataset_moon`) or full-scene GeoTIFF rasters with PSR mask filtering. |
@@ -58,6 +58,7 @@ $$\underbrace{\text{SAR Input (CPR)}}_{\text{Column 1 (Radar)}} \quad\longrighta
 | `losses.py` | Least-Squares GAN (LSGAN) loss, history ImagePool, and optional edge-consistency prior. |
 | `train.py` | CycleGAN training loop with dynamic LR scheduling and periodic visual sampling. |
 | `evaluate.py` | Quantitative evaluation (SSIM, PSNR, Pearson correlation, Cycle $L_1$) on held-out test splits. |
+| `diffusion/` | **Dedicated diffusion module**: Standalone PyTorch DDPM models, training, and hybrid CycleGAN+Diffusion refinement pipeline. |
 | `make_lunar_synthetic.py` | Synthetic lunar scene generator with impact craters, PSR shadows, and ShadowCam simulation for offline testing. |
 | `EVALUATION_REPORT.md` | Comprehensive experimental report and benchmark metrics. |
 
