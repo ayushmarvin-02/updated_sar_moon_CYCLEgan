@@ -15,7 +15,7 @@ CHANNEL_INDEX = {
     # Earth proxy (Sentinel-1)
     "vv": 0, "vh": 1, "ratio": 2,
     # Lunar SAR aliases (Mini-RF / DFSAR)
-    "s1": 0, "cpr": 1, "s2": 1,
+    "s1": 0, "cpr": 1, "srd": 1, "s2": 1, "trt": 2,
     "sc": 0, "oc": 1,
     # Chandrayaan-2 DFSAR 6-channel South Pole mosaics
     "east_cpr": 0, "east_srd": 1, "east_trt": 2,
@@ -64,7 +64,19 @@ class _TileSet:
         if not self.sar_files or not self.opt_files:
             raise FileNotFoundError(f"no tiles found under {d}")
         self.names = parse_channels(channels) if isinstance(channels, str) else list(channels)
-        self.idx = [CHANNEL_INDEX[n] for n in self.names]
+
+        meta_map = {}
+        meta_path = os.path.join(root, "meta.json")
+        if os.path.exists(meta_path):
+            try:
+                import json
+                with open(meta_path) as f:
+                    meta_chs = json.load(f).get("sar_channels", [])
+                meta_map = {str(name).lower(): idx for idx, name in enumerate(meta_chs)}
+            except Exception:
+                meta_map = {}
+
+        self.idx = [meta_map[n] if n in meta_map else CHANNEL_INDEX[n] for n in self.names]
         self.opt_channels = np.load(self.opt_files[0], mmap_mode="r").shape[0]
 
     def load_sar(self, i):

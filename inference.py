@@ -54,12 +54,14 @@ except ImportError:
 
 
 DEFAULT_CKPT_CANDIDATES = [
+    "runs/psr_cyclegan_100/last.pt",
     "runs/real_optical_100/last.pt",
     "runs/real_optical_50/last.pt",
     "runs/epochs_50/last.pt",
 ]
 
 DEFAULT_META_CANDIDATES = [
+    "data/moon_psr/meta.json",
     "data/moon_dfsar/meta.json",
     "data/dfsar/meta.json",
     "data/lunar_synthetic/meta.json",
@@ -217,6 +219,7 @@ class LunarOpticalSynthesizer:
 
     def prepare_sar_patch(self, raw_patch, channel_names=None, denoise=0):
         """Prepares a raw SAR patch (C, H, W) for generator input.
+        - Handles NaN NoData pixels safely (neutral 0.0 fill in [-1, 1]).
         - Applies optional Lee speckle filtering.
         - Maps available channels to target model channels.
         - Normalizes values to [-1, 1].
@@ -225,15 +228,23 @@ class LunarOpticalSynthesizer:
         if arr.ndim == 2:
             arr = arr[None]  # (1, H, W)
 
-        # Apply speckle filter if requested
+        # Apply speckle filter if requested (NaN-safe)
         if denoise > 1 and HAS_SCIPY:
             for c in range(arr.shape[0]):
-                arr[c] = lee_filter(arr[c], size=denoise)
+                valid_c = np.isfinite(arr[c])
+                if valid_c.any():
+                    med = float(np.median(arr[c][valid_c]))
+                    filtered = lee_filter(np.where(valid_c, arr[c], med), size=denoise)
+                    arr[c] = np.where(valid_c, filtered, np.nan)
 
-        # Check if already normalized to [-1, 1]
-        is_already_normalized = (
-            arr.min() >= -1.05 and arr.max() <= 1.05 and (arr.min() < -0.05 or arr.max() > 0.05)
-        )
+        # Check if already normalized to [-1, 1] using finite values only
+        valid_all = np.isfinite(arr)
+        if valid_all.any():
+            fin_vals = arr[valid_all]
+            vmin, vmax = float(fin_vals.min()), float(fin_vals.max())
+            is_already_normalized = (vmin >= -1.05 and vmax <= 1.05 and (vmin < -0.05 or vmax > 0.05))
+        else:
+            is_already_normalized = True
 
         # Channel mapping
         if channel_names is None:
@@ -242,6 +253,9 @@ class LunarOpticalSynthesizer:
                     "east_cpr", "east_srd", "east_trt",
                     "west_cpr", "west_srd", "west_trt"
                 ]
+            elif arr.shape[0] == 3:
+                # 3-channel PSR/DFSAR look layout: [cpr, srd, trt]
+                channel_names = ["west_cpr", "west_srd", "west_trt"]
             elif arr.shape[0] == 2:
                 channel_names = ["cpr", "srd"]
             elif arr.shape[0] == len(self.target_channel_names):
@@ -249,33 +263,47 @@ class LunarOpticalSynthesizer:
             else:
                 channel_names = [f"ch{i}" for i in range(arr.shape[0])]
 
+        # Single-look West fallback aliases if a 4-channel dual-look model receives West-only SAR
+        alias_fallback = {
+            "east_cpr": "west_cpr", "east_srd": "west_srd", "east_trt": "west_trt",
+            "west_cpr": "east_cpr", "west_srd": "east_srd", "west_trt": "east_trt",
+            "cpr": "west_cpr", "srd": "west_srd", "trt": "west_trt",
+        }
+
         # Extract required channels
         selected_channels = []
         for target_name in self.target_channel_names:
             if target_name in channel_names:
-                idx = channel_names.index(target_name)
-                ch_data = arr[idx]
+                ch_data = arr[channel_names.index(target_name)]
+            elif target_name in alias_fallback and alias_fallback[target_name] in channel_names:
+                ch_data = arr[channel_names.index(alias_fallback[target_name])]
             elif target_name in CHANNEL_INDEX and CHANNEL_INDEX[target_name] < arr.shape[0]:
                 ch_data = arr[CHANNEL_INDEX[target_name]]
             else:
-                # Fallback: take modulo index or first channel
                 idx = min(len(selected_channels), arr.shape[0] - 1)
                 ch_data = arr[idx]
 
-            # Normalize channel to [-1, 1] if not already normalized
-            if not is_already_normalized:
+            valid_ch = np.isfinite(ch_data)
+            if not valid_ch.any():
+                ch_norm = np.zeros_like(ch_data, dtype=np.float32)
+            elif not is_already_normalized:
                 if target_name in self.sar_ranges:
                     lo, hi = self.sar_ranges[target_name]
+                elif target_name in alias_fallback and alias_fallback[target_name] in self.sar_ranges:
+                    lo, hi = self.sar_ranges[alias_fallback[target_name]]
                 else:
-                    lo = float(np.percentile(ch_data, 1.0))
-                    hi = float(np.percentile(ch_data, 99.0))
+                    fin_ch = ch_data[valid_ch]
+                    lo = float(np.percentile(fin_ch, 1.0))
+                    hi = float(np.percentile(fin_ch, 99.0))
                     if hi <= lo:
                         hi = lo + 1e-4
-                ch_norm = np.clip((ch_data - lo) / (hi - lo), 0.0, 1.0) * 2.0 - 1.0
+                ch_norm = np.clip((np.where(valid_ch, ch_data, lo) - lo) / (hi - lo), 0.0, 1.0) * 2.0 - 1.0
+                ch_norm[~valid_ch] = 0.0
             else:
-                ch_norm = np.clip(ch_data, -1.0, 1.0)
+                ch_norm = np.clip(np.where(valid_ch, ch_data, 0.0), -1.0, 1.0)
+                ch_norm[~valid_ch] = 0.0
 
-            selected_channels.append(ch_norm)
+            selected_channels.append(ch_norm.astype(np.float32))
 
         normalized_stack = np.stack(selected_channels, axis=0)  # (in_ch, H, W)
         return normalized_stack
@@ -346,13 +374,14 @@ class LunarOpticalSynthesizer:
         out_accum = np.clip(out_accum, -1.0, 1.0)
         return out_accum, total_time_ms
 
-    def predict(self, input_data, index=None, denoise=0):
+    def predict(self, input_data, index=None, denoise=0, psr_skip_opt=False):
         """Unified prediction interface accepting:
         - file path (.npy, .tif, .tiff)
         - numpy array (2D, 3D, or 4D stack)
         """
         # Load from file if path is given
         geo_profile = None
+        input_path_str = input_data if isinstance(input_data, str) else ""
         if isinstance(input_data, str):
             if not os.path.exists(input_data):
                 raise FileNotFoundError(f"Input file not found: {input_data}")
@@ -371,6 +400,14 @@ class LunarOpticalSynthesizer:
         else:
             arr = np.array(input_data)
 
+        # Handle dataset_PSR 4-channel [opt, cpr, srd, trt] layout cleanly
+        ch_axis = 1 if arr.ndim == 4 else 0
+        if arr.ndim in (3, 4) and arr.shape[ch_axis] == 4:
+            path_hint = ("west_patches" in input_path_str.lower() or "east_patches" in input_path_str.lower())
+            if psr_skip_opt or path_hint:
+                print("Detected PSR [optical, cpr, srd, trt] layout -> extracting SAR channels [1:4].")
+                arr = arr[:, 1:4] if arr.ndim == 4 else arr[1:4]
+
         # Handle 4D patch stack (N, C, H, W)
         if arr.ndim == 4:
             if index is not None and str(index).lower() != "all":
@@ -378,6 +415,8 @@ class LunarOpticalSynthesizer:
                 if idx < 0 or idx >= len(arr):
                     raise IndexError(f"Patch index {idx} out of range [0, {len(arr)-1}].")
                 sar_patch = arr[idx]
+                if not np.isfinite(sar_patch).any():
+                    raise ValueError(f"Patch {idx} contains 100% NaN SAR pixels (no radar coverage).")
                 sar_norm = self.prepare_sar_patch(sar_patch, denoise=denoise)
                 out_opt, lat = self.synthesize_tile(sar_norm)
                 return {
@@ -389,11 +428,15 @@ class LunarOpticalSynthesizer:
                     "geo_profile": None,
                 }
             else:
-                # Process all patches in stack
+                # Process all valid patches in stack (skipping all-NaN patches)
                 results = []
                 total_lat = 0.0
+                skipped_nan = 0
                 for i in range(len(arr)):
                     s_patch = arr[i]
+                    if not np.isfinite(s_patch).any():
+                        skipped_nan += 1
+                        continue
                     s_norm = self.prepare_sar_patch(s_patch, denoise=denoise)
                     o_opt, lat = self.synthesize_tile(s_norm)
                     total_lat += lat
@@ -404,11 +447,13 @@ class LunarOpticalSynthesizer:
                         "sar_norm": s_norm,
                         "latency_ms": lat,
                     })
+                if skipped_nan > 0:
+                    print(f"Skipped {skipped_nan} patches with 100% NaN SAR data; synthesized {len(results)} valid patches.")
                 return {
                     "batch": results,
-                    "count": len(arr),
+                    "count": len(results),
                     "total_latency_ms": total_lat,
-                    "mean_latency_ms": total_lat / max(1, len(arr)),
+                    "mean_latency_ms": total_lat / max(1, len(results)),
                     "geo_profile": None,
                 }
 
@@ -532,6 +577,8 @@ def main():
                    help="Save synthesized optical output as GeoTIFF (if rasterio installed).")
     p.add_argument("--no-visualize", action="store_true",
                    help="Disable generating side-by-side SAR vs Optical comparison images.")
+    p.add_argument("--psr-skip-opt", action="store_true",
+                   help="Slice channels [1:4] when passing 4-channel [opt, cpr, srd, trt] PSR stacks.")
     p.add_argument("--device", default=None,
                    help="Device: 'cuda', 'cpu', or None (auto-detect).")
     args = p.parse_args()
@@ -554,6 +601,7 @@ def main():
         args.input,
         index=index_param,
         denoise=args.denoise,
+        psr_skip_opt=args.psr_skip_opt,
     )
 
     # Save output

@@ -74,9 +74,13 @@ pip install -r requirements.txt
 ```
 
 ### 2. Preprocess Data
-#### A. From Pre-Extracted Patch Stacks (e.g. `dataset_moon`)
+#### A. From Pre-Extracted Patch Stacks (`dataset_moon` or `dataset_PSR`)
 ```bash
-python prepare_lunar_data.py --patches-dir dataset_moon --surrogate-opt --out data/moon_dfsar
+# Unpaired multi-aspect DFSAR dataset
+python prepare_lunar_data.py --patches-dir dataset_moon --out data/moon_dfsar
+
+# Co-registered PSR dataset (spatially disjoint split, NaN-safe handling)
+python prepare_lunar_data.py --psr-dir dataset_PSR --out data/moon_psr
 ```
 
 #### B. From Full-Scene GeoTIFFs with PSR Mask Filtering
@@ -92,12 +96,21 @@ python prepare_lunar_data.py \
 
 ### 3. Train CycleGAN
 ```bash
+# Multi-aspect DFSAR training
 python train.py \
   --data data/moon_dfsar \
   --channels east_cpr,east_srd,west_cpr,west_srd \
-  --epochs 25 \
-  --epochs_decay 25 \
-  --out runs/epochs_50
+  --epochs 50 --epochs_decay 50 \
+  --lambda_edge 1.0 \
+  --out runs/real_optical_100
+
+# PSR training with anti-inversion polarity anchor (--lambda_pol)
+python train.py \
+  --data data/moon_psr \
+  --channels west_cpr,west_srd,west_trt \
+  --epochs 30 --epochs_decay 30 \
+  --lambda_edge 1.0 --lambda_pol 2.0 \
+  --out runs/psr_cyclegan_pol60
 ```
 
 ### 4. Evaluate Test Split
@@ -120,6 +133,9 @@ python inference.py --input data/moon_dfsar/test/sar/00000.npy --out runs/infere
 
 # D. Predict on a full-scene large GeoTIFF with Hann-cosine seamless window blending
 python inference.py --input path/to/sar_scene.tif --out runs/inference --save-tif
+
+# E. Predict on raw dataset_PSR stacks (NaN-safe, skips all-NaN East patches)
+python inference.py --input dataset_PSR/WEST_PATCHES/patches.npy --ckpt runs/psr_cyclegan_pol60/last.pt --meta data/moon_psr/meta.json --all --out runs/psr_inference_out
 ```
 
 #### Python API Integration
@@ -152,6 +168,20 @@ Inference requires only a single forward pass through Generator $G_{AB}$. On a c
 * **Right (Synthesized Optical)**: Reconstructed optical terrain revealing crater morphology, boulders, and ejecta blankets.
 
 ---
+
+## 🌑 Permanently Shadowed Region (`dataset_PSR`) Benchmark
+
+Evaluated on 15 unseen, spatially disjoint co-registered PSR patches (`WEST_PATCHES` vs. ShadowCam reflectance):
+
+| Configuration | SSIM | PSNR (dB) | Pearson Corr ($r$) | Throughput |
+| :--- | :---: | :---: | :---: | :---: |
+| **Polarity-Anchored PSR CycleGAN (`runs/psr_cyclegan_pol60`)** | **0.1906** | **12.84 dB** | **+0.3248** | **60.2 tiles/sec (16.6 ms/tile)** |
+| **Zero-Shot LROC Model (`runs/real_optical_100`)** | 0.1248 | 9.04 dB | +0.3528 | 60.7 tiles/sec (16.5 ms/tile) |
+| **Pure Diffusion (`diffusion/diffusion_last.pt`)** | 0.0775 | 10.88 dB | — | 0.25 tiles/sec (3926 ms/tile) |
+
+![PSR CycleGAN Evaluation Samples](assets/psr_eval_samples.png)
+
+*Left to Right: PSR West SAR (`CPR`) | Synthesized PSR Optical ($G_{AB}$) | True PSR Optical Ground Truth | Cycle-Reconstructed SAR ($G_{BA}$).*
 
 ---
 

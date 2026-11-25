@@ -14,7 +14,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from dataset import UnpairedDataset, parse_channels
-from losses import GANLoss, ImagePool, edge_consistency
+from losses import GANLoss, ImagePool, edge_consistency, polarity_hinge_loss
 from models import PatchDiscriminator, ResnetGenerator, init_weights
 from utils import save_grid, set_seed, to_img
 
@@ -36,6 +36,8 @@ def get_args():
     p.add_argument("--lambda_cycle", type=float, default=10.0)
     p.add_argument("--lambda_edge", type=float, default=0.0,
                    help="experimental SAR/optical edge-consistency weight (0 = off)")
+    p.add_argument("--lambda_pol", type=float, default=0.0,
+                   help="anti-inversion polarity hinge weight on primary SAR channel vs optical (0 = off)")
     p.add_argument("--pool_size", type=int, default=50)
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--save_every", type=int, default=10)
@@ -119,7 +121,9 @@ def main():
             loss_cyc = (l1(rec_A, real_A) + l1(rec_B, real_B)) * args.lambda_cycle
             loss_edge = (edge_consistency(real_A, fake_B) * args.lambda_edge
                          if args.lambda_edge > 0 else torch.zeros((), device=dev))
-            (loss_gan + loss_cyc + loss_edge).backward()
+            loss_pol = (polarity_hinge_loss(real_A, fake_B) * args.lambda_pol
+                        if args.lambda_pol > 0 else torch.zeros((), device=dev))
+            (loss_gan + loss_cyc + loss_edge + loss_pol).backward()
             opt_G.step()
 
             # ---- discriminators ----

@@ -90,6 +90,137 @@ def make_surrogate_optical(sar_patch):
     return norm[None].astype(np.float32)
 
 
+def _clear_npy(folder):
+    if os.path.exists(folder):
+        for f in os.listdir(folder):
+            if f.endswith(".npy"):
+                try:
+                    os.remove(os.path.join(folder, f))
+                except OSError:
+                    pass
+
+
+def process_psr_dataset(a):
+    """Workflow 3: Prepare dataset_PSR (co-registered West SAR/Optical + East Optical).
+
+    Expected layout under --psr-dir:
+      WEST_PATCHES/patches.npy  (N_w, 4, H, W): [opt, west_cpr, west_srd, west_trt]
+      EAST_PATCHES/patches.npy  (N_e, 4, H, W): [opt, east_cpr, east_srd, east_trt] (optional; all-NaN SAR dropped)
+    Uses spatially disjoint row splits on overlapping 2D tile grids so train and test share 0 pixels.
+    """
+    west_p = os.path.join(a.psr_dir, "WEST_PATCHES", "patches.npy")
+    east_p = os.path.join(a.psr_dir, "EAST_PATCHES", "patches.npy")
+    if not os.path.exists(west_p):
+        sys.exit(f"Missing PSR West patches file: {west_p}")
+
+    west = np.load(west_p).astype(np.float32)  # (N_w, 4, H, W)
+    east = np.load(east_p).astype(np.float32) if os.path.exists(east_p) else None
+
+    ch_names = ["west_cpr", "west_srd", "west_trt"]
+    n_w = west.shape[0]
+
+    # Spatially disjoint split on the 49-patch 50%-overlap PSR grid (rows 0..3 train, row 4 val buffer, rows 5..6 test)
+    if n_w == 49:
+        tr_idx = list(range(0, 26))
+        va_idx = list(range(26, 34))
+        te_idx = list(range(34, 49))
+    else:
+        n_tr = int(round(n_w * a.split[0]))
+        n_va = int(round(n_w * a.split[1]))
+        tr_idx = list(range(0, n_tr))
+        va_idx = list(range(n_tr, min(n_w, n_tr + n_va)))
+        te_idx = list(range(min(n_w, n_tr + n_va), n_w))
+
+    # Extract West SAR [1:4] and Optical [0:1]
+    west_sar = west[:, 1:4]
+    west_opt = west[:, 0:1]
+
+    # Compute normalization bounds strictly from train split (NaN-safe)
+    sar_ranges = {}
+    for c, name in enumerate(ch_names):
+        tr_ch = west_sar[tr_idx, c]
+        valid = np.isfinite(tr_ch)
+        lo = float(np.percentile(tr_ch[valid], 1.0)) if valid.any() else 0.0
+        hi = float(np.percentile(tr_ch[valid], 99.0)) if valid.any() else 1.0
+        if hi <= lo:
+            hi = lo + 1e-4
+        sar_ranges[name] = (lo, hi)
+        print(f"  PSR {name:10s}: [{lo:.4f}, {hi:.4f}] -> mapped to [-1, 1]")
+
+    # Include valid East optical patches in training optical pool (Domain B)
+    east_opt = None
+    if east is not None:
+        east_opt_raw = east[:, 0:1]
+        if np.isfinite(east_opt_raw).any():
+            east_opt = east_opt_raw
+
+    tr_opt_pool = [west_opt[tr_idx]] + ([east_opt] if east_opt is not None else [])
+    tr_opt_cat = np.concatenate(tr_opt_pool, axis=0)
+    opt_valid = np.isfinite(tr_opt_cat)
+    opt_lo = float(np.percentile(tr_opt_cat[opt_valid], 1.0))
+    opt_hi = float(np.percentile(tr_opt_cat[opt_valid], 99.0))
+    if opt_hi <= opt_lo:
+        opt_hi = opt_lo + 1e-4
+    opt_range = (opt_lo, opt_hi)
+    print(f"  PSR optical  : [{opt_lo:.4f}, {opt_hi:.4f}] -> mapped to [-1, 1]")
+
+    def norm_sar_batch(batch):
+        out = np.zeros_like(batch, dtype=np.float32)
+        for c, name in enumerate(ch_names):
+            lo, hi = sar_ranges[name]
+            ch = batch[:, c]
+            valid = np.isfinite(ch)
+            norm = np.clip((np.where(valid, ch, lo) - lo) / (hi - lo), 0.0, 1.0) * 2.0 - 1.0
+            norm[~valid] = 0.0  # neutral mid-range fill for NoData radar edges
+            out[:, c] = norm
+        return out
+
+    def norm_opt_batch(batch):
+        valid = np.isfinite(batch)
+        norm = np.clip((np.where(valid, batch, opt_lo) - opt_lo) / (opt_hi - opt_lo), 0.0, 1.0) * 2.0 - 1.0
+        norm[~valid] = -1.0
+        return norm.astype(np.float32)
+
+    splits_map = {
+        "train": (norm_sar_batch(west_sar[tr_idx]), norm_opt_batch(tr_opt_cat)),
+        "val": (norm_sar_batch(west_sar[va_idx]), norm_opt_batch(west_opt[va_idx])),
+        "test": (norm_sar_batch(west_sar[te_idx]), norm_opt_batch(west_opt[te_idx])),
+    }
+
+    counts_sar, counts_opt = {}, {}
+    for sp, (s_arr, o_arr) in splits_map.items():
+        sar_dir = os.path.join(a.out, sp, "sar")
+        opt_dir = os.path.join(a.out, sp, "opt")
+        os.makedirs(sar_dir, exist_ok=True)
+        os.makedirs(opt_dir, exist_ok=True)
+        _clear_npy(sar_dir)
+        _clear_npy(opt_dir)
+
+        for i in range(s_arr.shape[0]):
+            np.save(os.path.join(sar_dir, f"{i:05d}.npy"), s_arr[i])
+        for j in range(o_arr.shape[0]):
+            np.save(os.path.join(opt_dir, f"{j:05d}.npy"), o_arr[j])
+        counts_sar[sp] = int(s_arr.shape[0])
+        counts_opt[sp] = int(o_arr.shape[0])
+
+    meta = {
+        "source": "PSR co-registered patches (spatially disjoint row split)",
+        "psr_dir": a.psr_dir,
+        "sar_channels": ch_names,
+        "sar_ranges": sar_ranges,
+        "optical_range": opt_range,
+        "counts_sar": counts_sar,
+        "counts_opt": counts_opt,
+        "has_real_optical": True,
+        "split_indices": {"train_west": tr_idx, "val_west": va_idx, "test_west": te_idx},
+    }
+    with open(os.path.join(a.out, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+
+    print(f"\nPrepared PSR dataset in '{a.out}':")
+    print(json.dumps({k: v for k, v in meta.items() if k != "split_indices"}, indent=2))
+
+
 def process_patches_stack(a):
     """Workflow 2: Unpack and normalize 4D pre-extracted patches (e.g. dataset_moon)."""
     train_path = os.path.join(a.patches_dir, "train", "patches.npy")
@@ -376,8 +507,9 @@ def process_full_rasters(a):
 
 def main():
     ap = argparse.ArgumentParser(description="Prepare lunar SAR and optical tiles.")
-    # Mode 1: Pre-extracted patch stacks (e.g. dataset_moon)
+    # Mode 1: Pre-extracted patch stacks (e.g. dataset_moon or dataset_PSR)
     ap.add_argument("--patches-dir", help="Path to pre-extracted patches folder (like dataset_moon with train/val/test patches.npy).")
+    ap.add_argument("--psr-dir", help="Path to PSR dataset folder (like dataset_PSR with WEST_PATCHES/EAST_PATCHES).")
     ap.add_argument("--surrogate-opt", action="store_true", help="Generate surrogate optical targets for testing when ShadowCam matching is pending.")
 
     # Mode 2: Full-scene rasters
@@ -406,7 +538,9 @@ def main():
                     metavar=("TRAIN", "VAL", "TEST"), help="Train/val/test fractions.")
     a = ap.parse_args()
 
-    if a.patches_dir:
+    if a.psr_dir:
+        process_psr_dataset(a)
+    elif a.patches_dir:
         process_patches_stack(a)
     else:
         process_full_rasters(a)

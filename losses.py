@@ -63,3 +63,16 @@ def edge_consistency(sar, opt):
     ms = ms / (ms.mean((2, 3), keepdim=True) + 1e-6)
     mo = mo / (mo.mean((2, 3), keepdim=True) + 1e-6)
     return F.l1_loss(ms, mo)
+
+
+def polarity_hinge_loss(sar, opt, margin=0.35):
+    """Anti-inversion physics prior: prevents unpaired CycleGAN from converging to
+    an inverted contrast polarity by penalizing negative correlation between primary
+    radar roughness (ch0, e.g. CPR) and generated optical brightness below `margin`."""
+    a = sar[:, :1].flatten(1)
+    b = opt[:, :1].flatten(1)
+    ac = a - a.mean(dim=1, keepdim=True)
+    bc = b - b.mean(dim=1, keepdim=True)
+    denom = torch.sqrt((ac * ac).sum(dim=1) * (bc * bc).sum(dim=1) + 1e-8)
+    corr = (ac * bc).sum(dim=1) / denom
+    return F.relu(margin - corr).mean()
